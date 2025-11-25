@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 
 export default function CostBadge() {
   const [data, setData] = useState({ minutes: 0, from: "", to: "" });
-  const rate = Number.parseFloat(import.meta?.env?.VITE_OPENAI_RATE ?? "0.006"); // $/min
-  const pln = Number.parseFloat(import.meta?.env?.VITE_PLN_RATE ?? "4");       // PLN/USD
+  const rate = Number.parseFloat(process.env.REACT_APP_OPENAI_RATE || "0.006"); // $/min
+  const pln = Number.parseFloat(process.env.REACT_APP_PLN_RATE || "4");       // PLN/USD
   const timerRef = useRef(null);
 
   const ym = () => {
