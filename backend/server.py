@@ -67,6 +67,118 @@ async def get_status_checks():
     
     return status_checks
 
+
+# --- OpenAI Status Check ---
+@api_router.get("/openai/status")
+async def openai_status():
+    """Check OpenAI API key status"""
+    key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_WHISPER_KEY")
+    if not key:
+        return {"ok": False, "error": "missing_key"}
+    
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                "https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {key}"}
+            )
+        
+        if r.status_code == 200:
+            return {"ok": True}
+        else:
+            return {
+                "ok": False,
+                "status": r.status_code,
+                "body": r.text[:200] if r.text else ""
+            }
+    except httpx.HTTPError as e:
+        return {"ok": False, "error": "network_error", "detail": str(e)}
+
+
+# --- Usage Tracking Models ---
+class UsageAdd(BaseModel):
+    minutes: float
+    source: str = "voice"
+
+
+# --- Usage API (MongoDB storage) ---
+@api_router.post("/usage/add")
+async def usage_add(payload: UsageAdd):
+    """Add usage record for cost tracking"""
+    if payload.minutes <= 0:
+        return {"ok": False, "reason": "minutes<=0"}
+    
+    doc = {
+        "ts": datetime.now(timezone.utc),
+        "minutes": payload.minutes,
+        "source": payload.source
+    }
+    
+    try:
+        # Store timestamp as ISO string for MongoDB
+        doc_to_insert = {**doc}
+        doc_to_insert['ts'] = doc['ts'].isoformat()
+        await db.usage.insert_one(doc_to_insert)
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Error adding usage: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+@api_router.get("/usage/stats")
+async def usage_stats(month: Optional[str] = None):
+    """Get usage statistics for a given month (YYYY-MM format, UTC)"""
+    now = datetime.now(timezone.utc)
+    
+    # Parse month parameter or use current month
+    if month:
+        try:
+            y, m = [int(x) for x in month.split("-")]
+            start = datetime(y, m, 1, tzinfo=timezone.utc)
+        except (ValueError, IndexError):
+            start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    else:
+        start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    
+    # Calculate next month boundary
+    if start.month == 12:
+        nxt = datetime(start.year + 1, 1, 1, tzinfo=timezone.utc)
+    else:
+        nxt = datetime(start.year, start.month + 1, 1, tzinfo=timezone.utc)
+    
+    total = 0.0
+    
+    try:
+        # Query MongoDB for usage in the date range
+        # Convert start and nxt to ISO strings for comparison
+        start_iso = start.isoformat()
+        nxt_iso = nxt.isoformat()
+        
+        cursor = db.usage.find(
+            {"ts": {"$gte": start_iso, "$lt": nxt_iso}},
+            {"minutes": 1, "_id": 0}
+        )
+        
+        async for doc in cursor:
+            try:
+                total += float(doc.get("minutes", 0))
+            except (ValueError, TypeError):
+                pass
+        
+        return {
+            "minutes": round(total, 3),
+            "from": start.isoformat(),
+            "to": nxt.isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting usage stats: {e}")
+        return {
+            "minutes": 0.0,
+            "from": start.isoformat(),
+            "to": nxt.isoformat(),
+            "error": str(e)
+        }
+
 # Include the router in the main app
 app.include_router(api_router)
 
