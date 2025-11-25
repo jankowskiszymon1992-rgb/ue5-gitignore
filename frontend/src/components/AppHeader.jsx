@@ -1,6 +1,7 @@
+import React, { useEffect, useRef, useState } from "react";
 import OpenAIStatusBadge from "./OpenAIStatusBadge";
 import CostBadge from "./CostBadge";
-import { useEffect, useRef, useState } from "react";
+import ErrorTelemetryBadge from "./ErrorTelemetryBadge";
 
 export default function AppHeader() {
   const searchRef = useRef(null);
@@ -31,6 +32,7 @@ export default function AppHeader() {
           <input ref={searchRef} placeholder="Szukaj… (/)" className="w-full max-w-xs border rounded px-2 py-1 text-sm" />
           <div className="ml-2"><OpenAIStatusBadge /></div>
           <div className="ml-2"><CostBadge /></div>
+          <div className="ml-2"><ErrorTelemetryBadge /></div>
         </div>
         {banner.show && (
           <div role="alert" className={`w-full text-xs px-3 py-2 text-white ${banner.tone === "error" ? "bg-red-600" : "bg-amber-600"}`}>
