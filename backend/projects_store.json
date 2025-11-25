@@ -1,0 +1,23 @@
+[
+  {
+    "id": 1,
+    "name": "Instalacja elektryczna - Biurowiec",
+    "status": "active",
+    "hours_month": 120,
+    "client_id": 1
+  },
+  {
+    "id": 2,
+    "name": "Modernizacja sieci - Magazyn",
+    "status": "active",
+    "hours_month": 80,
+    "client_id": 1
+  },
+  {
+    "id": 3,
+    "name": "Projekt oświetlenia LED",
+    "status": "completed",
+    "hours_month": 0,
+    "client_id": 2
+  }
+]
