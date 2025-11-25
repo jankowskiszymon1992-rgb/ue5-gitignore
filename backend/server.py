@@ -1,7 +1,7 @@
-from fastapi import FastAPI, Body
+from fastapi import FastAPI, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 import os, json, httpx
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional
 
 app = FastAPI(title="raspberry-app API")
@@ -30,6 +30,13 @@ def _save_list(path: str, data: List[Dict[str, Any]]) -> None:
             json.dump(data, f, ensure_ascii=False)
     except Exception:
         pass
+
+def _parse_date_utc(s: str) -> Optional[datetime]:
+    try:
+        y, m, d = [int(x) for x in s.split("-")]
+        return datetime(y, m, d, tzinfo=timezone.utc)
+    except Exception:
+        return None
 
 _usage  : List[Dict[str, Any]] = _load_list(USAGE_PATH)
 _errors : List[Dict[str, Any]] = _load_list(ERRORS_PATH)
@@ -73,15 +80,25 @@ def usage_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     return {"ok": True}
 
 @app.get("/api/usage/stats")
-def usage_stats(month: Optional[str] = None) -> Dict[str, Any]:
+def usage_stats(
+    month: Optional[str] = None,
+    from_: Optional[str] = Query(None, alias="from"),
+    to: Optional[str] = None,
+) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
-    if month:
-        y, m = [int(x) for x in month.split("-")]
-        start = datetime(y, m, 1, tzinfo=timezone.utc)
+    if from_ or to:
+        start = _parse_date_utc(from_) if from_ else datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        end_base = _parse_date_utc(to) if to else now
+        end = end_base + timedelta(days=1)  # end-of-day inclusive
     else:
-        start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-    end = datetime(start.year + (1 if start.month == 12 else 0),
-                   1 if start.month == 12 else start.month + 1, 1, tzinfo=timezone.utc)
+        if month:
+            y, m = [int(x) for x in month.split("-")]
+            start = datetime(y, m, 1, tzinfo=timezone.utc)
+        else:
+            start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        end = datetime(start.year + (1 if start.month == 12 else 0),
+                       1 if start.month == 12 else start.month + 1, 1, tzinfo=timezone.utc)
+
     total = 0.0
     for e in _usage:
         try:
@@ -90,18 +107,34 @@ def usage_stats(month: Optional[str] = None) -> Dict[str, Any]:
                 total += float(e.get("minutes", 0))
         except Exception:
             pass
-    return {"minutes": round(total, 3), "from": start.isoformat(), "to": end.isoformat()}
+    return {"minutes": round(total, 3), "from": start.isoformat(), "to": (end - timedelta(seconds=1)).isoformat()}
 
 @app.get("/api/usage/list")
-def usage_list(month: Optional[str] = None, source: Optional[str] = None, limit: int = 200) -> Dict[str, Any]:
+def usage_list(
+    month: Optional[str] = None,
+    from_: Optional[str] = Query(None, alias="from"),
+    to: Optional[str] = None,
+    source: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+    sort: str = "desc",  # asc|desc by ts
+) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
-    if month:
-        y, m = [int(x) for x in month.split("-")]
-        start = datetime(y, m, 1, tzinfo=timezone.utc)
+    if from_ or to:
+        start = _parse_date_utc(from_) if from_ else datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        end_base = _parse_date_utc(to) if to else now
+        end = end_base + timedelta(days=1)
     else:
-        start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-    end = datetime(start.year + (1 if start.month == 12 else 0),
-                   1 if start.month == 12 else start.month + 1, 1, tzinfo=timezone.utc)
+        if month:
+            y, m = [int(x) for x in month.split("-")]
+            start = datetime(y, m, 1, tzinfo=timezone.utc)
+        else:
+            start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        end = datetime(start.year + (1 if start.month == 12 else 0),
+                       1 if start.month == 12 else start.month + 1, 1, tzinfo=timezone.utc)
+
+    ps = max(1, min(page_size, 1000))
+    p = max(1, page)
 
     items: List[Dict[str, Any]] = []
     for e in _usage:
@@ -111,10 +144,16 @@ def usage_list(month: Optional[str] = None, source: Optional[str] = None, limit:
                 items.append(e)
         except Exception:
             continue
-    items.sort(key=lambda d: d.get("ts",""), reverse=True)
-    return {"items": items[:max(1,min(limit,1000))], "count": len(items)}
 
-# --- Error telemetry: add/get ---
+    items.sort(key=lambda d: d.get("ts", ""), reverse=(sort != "asc"))
+    total = len(items)
+    start_i = (p - 1) * ps
+    end_i = start_i + ps
+    view = items[start_i:end_i]
+    pages = (total + ps - 1) // ps if ps else 1
+    return {"items": view, "total": total, "page": p, "page_size": ps, "pages": pages}
+
+# --- Error telemetry: add/get (with from/to + pagination) ---
 @app.post("/api/usage/error")
 def error_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     entry = {
@@ -128,15 +167,31 @@ def error_add(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     return {"ok": True}
 
 @app.get("/api/usage/errors")
-def errors_list(month: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+def errors_list(
+    month: Optional[str] = None,
+    from_: Optional[str] = Query(None, alias="from"),
+    to: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+    sort: str = "desc",
+) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
-    if month:
-        y, m = [int(x) for x in month.split("-")]
-        start = datetime(y, m, 1, tzinfo=timezone.utc)
+    if from_ or to:
+        start = _parse_date_utc(from_) if from_ else datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        end_base = _parse_date_utc(to) if to else now
+        end = end_base + timedelta(days=1)
     else:
-        start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-    end = datetime(start.year + (1 if start.month == 12 else 0),
-                   1 if start.month == 12 else start.month + 1, 1, tzinfo=timezone.utc)
+        if month:
+            y, m = [int(x) for x in month.split("-")]
+            start = datetime(y, m, 1, tzinfo=timezone.utc)
+        else:
+            start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        end = datetime(start.year + (1 if start.month == 12 else 0),
+                       1 if start.month == 12 else start.month + 1, 1, tzinfo=timezone.utc)
+
+    ps = max(1, min(page_size, 1000))
+    p = max(1, page)
+
     items: List[Dict[str, Any]] = []
     for e in _errors:
         try:
@@ -145,5 +200,11 @@ def errors_list(month: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
                 items.append(e)
         except Exception:
             continue
-    items.sort(key=lambda d: d.get("ts",""), reverse=True)
-    return {"items": items[:max(1,min(limit,500))], "count": len(items)}
+
+    items.sort(key=lambda d: d.get("ts",""), reverse=(sort != "asc"))
+    total = len(items)
+    start_i = (p - 1) * ps
+    end_i = start_i + ps
+    view = items[start_i:end_i]
+    pages = (total + ps - 1) // ps if ps else 1
+    return {"items": view, "total": total, "page": p, "page_size": ps, "pages": pages}
